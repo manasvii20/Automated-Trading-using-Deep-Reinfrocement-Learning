@@ -8,6 +8,7 @@ from finrl.config import ALPACA_API_BASE_URL
 from finrl.config import DATA_SAVE_DIR
 from finrl.config import ERL_PARAMS
 from finrl.config import INDICATORS
+from finrl.config import PPO_PARAMS
 from finrl.config import RESULTS_DIR
 from finrl.config import TENSORBOARD_LOG_DIR
 from finrl.config import TEST_END_DATE
@@ -35,7 +36,7 @@ def build_parser():
     parser.add_argument(
         "--mode",
         dest="mode",
-        help="start mode, train, download_data" " backtest",
+        help="start mode: train, test, trade",
         metavar="MODE",
         default="train",
     )
@@ -60,7 +61,7 @@ def main() -> int:
 
         env = StockTradingEnv
 
-        # demo for elegantrl
+        # Default to stable-baselines3 to avoid optional ElegantRL dependency issues.
         kwargs = (
             {}
         )  # in current meta, with respect yahoofinance, kwargs is {}. For other data sources, such as joinquant, kwargs is not empty
@@ -71,12 +72,12 @@ def main() -> int:
             data_source="yahoofinance",
             time_interval="1D",
             technical_indicator_list=INDICATORS,
-            drl_lib="elegantrl",
+            drl_lib="stable_baselines3",
             env=env,
             model_name="ppo",
-            cwd="./test_ppo",
-            erl_params=ERL_PARAMS,
-            break_step=1e5,
+            cwd="./sb3_ppo_stock",
+            agent_params=PPO_PARAMS,
+            total_timesteps=2e5,
             kwargs=kwargs,
         )
     elif options.mode == "test":
@@ -84,7 +85,6 @@ def main() -> int:
 
         env = StockTradingEnv
 
-        # demo for elegantrl
         # in current meta, with respect yahoofinance, kwargs is {}. For other data sources, such as joinquant, kwargs is not empty
         kwargs = {}
 
@@ -95,11 +95,10 @@ def main() -> int:
             data_source="yahoofinance",
             time_interval="1D",
             technical_indicator_list=INDICATORS,
-            drl_lib="elegantrl",
+            drl_lib="stable_baselines3",
             env=env,
             model_name="ppo",
-            cwd="./test_ppo",
-            net_dimension=512,
+            cwd="./sb3_ppo_stock",
             kwargs=kwargs,
         )
     elif options.mode == "trade":
@@ -120,7 +119,7 @@ def main() -> int:
             data_source="yahoofinance",
             time_interval="1D",
             technical_indicator_list=INDICATORS,
-            drl_lib="elegantrl",
+            drl_lib="stable_baselines3",
             env=env,
             model_name="ppo",
             API_KEY=ALPACA_API_KEY,
@@ -129,6 +128,8 @@ def main() -> int:
             trade_mode="paper_trading",
             if_vix=True,
             kwargs=kwargs,
+            cwd="./sb3_ppo_stock",
+            net_dimension=512,
             state_dim=len(DOW_30_TICKER) * (len(INDICATORS) + 3)
             + 3,  # bug fix: for ppo add dimension of state/observations space =  len(stocks)* len(INDICATORS) + 3+ 3*len(stocks)
             action_dim=len(

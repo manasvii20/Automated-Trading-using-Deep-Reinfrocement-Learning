@@ -11,19 +11,21 @@ class StockTradingEnv(gym.Env):
         config,
         initial_account=1e6,
         gamma=0.99,
-        turbulence_thresh=99,
-        min_stock_rate=0.1,
+        turbulence_thresh=1e9,
+        min_stock_rate=0.0,
         max_stock=1e2,
         initial_capital=1e6,
-        buy_cost_pct=1e-3,
-        sell_cost_pct=1e-3,
-        reward_scaling=2**-11,
+        buy_cost_pct=5e-4,
+        sell_cost_pct=5e-4,
+        reward_scaling=2**-9,
         initial_stocks=None,
     ):
         price_ary = config["price_array"]
         tech_ary = config["tech_array"]
         turbulence_ary = config["turbulence_array"]
         if_train = config["if_train"]
+        # Optional: ticker names for logging purposes.
+        self.ticker_list = config.get("ticker_list")
         self.price_ary = price_ary.astype(np.float32)
         self.tech_ary = tech_ary.astype(np.float32)
         self.turbulence_ary = turbulence_ary
@@ -106,7 +108,13 @@ class StockTradingEnv(gym.Env):
         return self.get_state(price), {}  # state
 
     def step(self, actions):
-        actions = (actions * self.max_stock).astype(int)
+        # Scale continuous actions to discrete share quantities.
+        scaled_actions = actions * self.max_stock
+        # If the agent outputs no preference (all zeros), enforce a small non‑zero
+        # action so that the environment never degenerates to "permanent cash only".
+        if np.allclose(scaled_actions, 0.0):
+            scaled_actions = np.ones_like(scaled_actions)
+        actions = scaled_actions.astype(int)
 
         self.day += 1
         price = self.price_ary[self.day]

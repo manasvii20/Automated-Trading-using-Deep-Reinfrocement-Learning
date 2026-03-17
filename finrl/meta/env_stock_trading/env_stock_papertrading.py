@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from fileinput import filename
 import threading
 import time
 
@@ -9,6 +10,8 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 import torch
+import os
+import matplotlib.pyplot as plt
 
 from finrl.meta.data_processors.processor_alpaca import AlpacaProcessor
 
@@ -28,8 +31,9 @@ class AlpacaPaperTrading:
         API_SECRET,
         API_BASE_URL,
         tech_indicator_list,
-        turbulence_thresh=30,
+        turbulence_thresh=1e9,
         max_stock=1e2,
+        min_stock_rate=0.0,
         latency=None,
     ):
         # load agent
@@ -139,6 +143,7 @@ class AlpacaPaperTrading:
         self.stockUniverse = ticker_list
         self.turbulence_bool = 0
         self.equities = []
+        self.min_stock_rate = min_stock_rate
 
     def test_latency(self, test_times=10):
         total_time = 0
@@ -153,6 +158,8 @@ class AlpacaPaperTrading:
         return latency
 
     def run(self):
+        clock = self.alpaca.get_clock()
+        print("Time to close (seconds):", (clock.next_close - clock.timestamp).total_seconds())
         orders = self.alpaca.list_orders(status="open")
         for order in orders:
             self.alpaca.cancel_order(order.id)
@@ -164,20 +171,49 @@ class AlpacaPaperTrading:
         tAMO.join()
         print("Market opened.")
         while True:
-            # Figure out when the market will close so we can prepare to sell beforehand.
             clock = self.alpaca.get_clock()
             closingTime = clock.next_close.replace(
                 tzinfo=datetime.timezone.utc
             ).timestamp()
-            currTime = clock.timestamp.replace(tzinfo=datetime.timezone.utc).timestamp()
+            currTime = clock.timestamp.replace(
+                tzinfo=datetime.timezone.utc
+            ).timestamp()
             self.timeToClose = closingTime - currTime
 
-            if self.timeToClose < (60):
-                # Close all positions when 1 minutes til market close.
+            if self.timeToClose < 60:
                 print("Market closing soon. Stop trading.")
                 break
 
-                """# Close all positions when 1 minutes til market close.
+            trade = threading.Thread(target=self.trade)
+            trade.start()
+            trade.join()
+
+            last_equity = float(self.alpaca.get_account().last_equity)
+            cur_time = time.time()
+            self.equities.append([cur_time, last_equity])
+
+            time.sleep(self.time_interval)
+
+        if len(self.equities) > 0:
+            os.makedirs("results", exist_ok=True)
+
+            df_equity = pd.DataFrame(self.equities, columns=["timestamp", "equity"])
+            df_equity["datetime"] = pd.to_datetime(df_equity["timestamp"], unit="s")
+
+            filename = "results/equity_paper_trading_ppo.csv"
+            df_equity.to_csv(filename, index=False)
+
+            print(f"[INFO] Equity curve saved to {filename}")
+
+            plt.figure(figsize=(10, 5))
+            plt.plot(df_equity["datetime"], df_equity["equity"])
+            plt.title("Equity Curve (Paper Trading)")
+            plt.xlabel("Time")
+            plt.ylabel("Equity ($)")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.show()
+            """# Close all positions when 1 minutes til market close.
             print("Market closing soon.  Closing positions.")
 
             positions = self.alpaca.list_positions()
@@ -196,14 +232,15 @@ class AlpacaPaperTrading:
             print("Sleeping until market close (15 minutes).")
             time.sleep(60 * 15)"""
 
-            else:
-                trade = threading.Thread(target=self.trade)
-                trade.start()
-                trade.join()
-                last_equity = float(self.alpaca.get_account().last_equity)
-                cur_time = time.time()
-                self.equities.append([cur_time, last_equity])
-                time.sleep(self.time_interval)
+            
+        else:
+            trade = threading.Thread(target=self.trade)
+            trade.start()
+            trade.join()
+            last_equity = float(self.alpaca.get_account().last_equity)
+            cur_time = time.time()
+            self.equities.append([cur_time, last_equity])
+            time.sleep(self.time_interval)
 
     def awaitMarketOpen(self):
         isOpen = self.alpaca.get_clock().is_open
@@ -219,6 +256,8 @@ class AlpacaPaperTrading:
             isOpen = self.alpaca.get_clock().is_open
 
     def trade(self):
+        print("Turbulence bool:", self.turbulence_bool)
+        print("DRL LIB:", self.drl_lib)
         state = self.get_state()
 
         if self.drl_lib == "elegantrl":
@@ -233,16 +272,22 @@ class AlpacaPaperTrading:
             action = self.agent.compute_single_action(state)
 
         elif self.drl_lib == "stable_baselines3":
-            action = self.model.predict(state)[0]
+            raw_action, _ = self.model.predict(state, deterministic=True)
+            # Scale continuous action \in [-1, 1] to share quantities
+            action = (raw_action * self.max_stock).astype(int)
 
         else:
             raise ValueError(
                 "The DRL library input is NOT supported yet. Please check your input."
             )
+        
+        print("Action vector sample:", action[:5])
+        print("Max action:", np.max(action))
+        print("Min action:", np.min(action))
 
         self.stocks_cd += 1
         if self.turbulence_bool == 0:
-            min_action = 10  # stock_cd
+            min_action = int(self.max_stock * self.min_stock_rate) # stock_cd
             for index in np.where(action < -min_action)[0]:  # sell_index:
                 sell_num_shares = min(self.stocks[index], -action[index])
                 qty = abs(int(sell_num_shares))
@@ -257,23 +302,43 @@ class AlpacaPaperTrading:
                 self.cash = float(self.alpaca.get_account().cash)
                 self.stocks_cd[index] = 0
 
-            for index in np.where(action > min_action)[0]:  # buy_index:
+            for index in np.where(action >= min_action)[0]:
+
                 if self.cash < 0:
                     tmp_cash = 0
                 else:
                     tmp_cash = self.cash
-                buy_num_shares = min(
-                    tmp_cash // self.price[index], abs(int(action[index]))
+
+                price = self.price[index]
+
+                print(
+                    "DEBUG:",
+                    self.stockUniverse[index],
+                    "| Cash:", tmp_cash,
+                    "| Price:", price,
+                    "| Action:", action[index]
                 )
+
+                if price <= 0:
+                    print("Skipping because price is 0 or negative")
+                    continue
+
+                shares_possible = tmp_cash // price
+                buy_num_shares = min(shares_possible, abs(int(action[index])))
                 qty = abs(int(buy_num_shares))
+
+                print(
+                    "Shares possible:", shares_possible,
+                    "| Final qty:", qty
+                )
+
                 respSO = []
                 tSubmitOrder = threading.Thread(
-                    target=self.submitOrder(
-                        qty, self.stockUniverse[index], "buy", respSO
-                    )
+                    target=self.submitOrder(qty, self.stockUniverse[index], "buy", respSO)
                 )
                 tSubmitOrder.start()
                 tSubmitOrder.join()
+
                 self.cash = float(self.alpaca.get_account().cash)
                 self.stocks_cd[index] = 0
 
@@ -295,7 +360,7 @@ class AlpacaPaperTrading:
             self.stocks_cd[:] = 0
 
     def get_state(self):
-        alpaca = AlpacaProcessor(api=self.alpaca)
+        alpaca = AlpacaProcessor(self.alpaca)
         price, tech, turbulence = alpaca.fetch_latest_data(
             ticker_list=self.stockUniverse,
             time_interval="1Min",

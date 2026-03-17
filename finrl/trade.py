@@ -17,7 +17,7 @@ def trade(
     API_KEY,
     API_SECRET,
     API_BASE_URL,
-    trade_mode="backtesting",
+    trade_mode="paper_trading",
     if_vix=True,
     **kwargs,
 ):
@@ -63,7 +63,10 @@ def trade(
             API_SECRET,
             API_BASE_URL,
             technical_indicator_list,
-            turbulence_thresh=30,
+            # Use a very high turbulence threshold for paper trading so
+            # the agent is allowed to buy and sell under normal VIX levels.
+            # The default in AlpacaPaperTrading is 1e9; we align with that here.
+            turbulence_thresh=1e9,
             max_stock=1e2,
             latency=None,
         )
