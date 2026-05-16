@@ -1,4 +1,4 @@
-# Automated Trading Using Deep Reinforcement Learning
+# DeepRL Trading Agent
 
 ## Overview
 This project focuses on building an AI-driven automated trading system using Deep Reinforcement Learning (DRL). Leveraging the FinRL framework, the system trains an intelligent agent to make trading decisions such as Buy, Sell, or Hold based on historical market data.
